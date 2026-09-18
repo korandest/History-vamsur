@@ -591,6 +591,10 @@ let bossArena=null;
 const ARENA_R = 460;
 let usedQuizIdx = new Set();
 let currentQuiz = null, quizCorrect=0, quizTotal=0, lastQuizWrong=false;
+// 폭탄 등 광역기로 여러 적을 한 프레임에 처치하면 grantXp()가 같은 틱에 여러 번 호출될 수 있다.
+// 그때마다 즉시 openQuiz()를 부르면 퀴즈 화면이 서로 덮어써지며 상태가 꼬여 화면이 멈춘 것처럼 보인다.
+// 그래서 레벨업은 "쌓아두었다가(pendingLevelUps) 한 번에 하나씩" 순서대로 처리한다.
+let pendingLevelUps = 0;
 
 function freshPlayer(){
   return {
@@ -793,7 +797,7 @@ function startGame(){
   lightningFx=[]; groundZones=[]; spiritShots=[]; spearFx=[]; rainZones=[]; bombs=[];
   elapsed=0; eraIdx=0; eraTimer=0; bossActive=null; bossSpawnedForEra=false;
   killCount=0; bossKillCount=0; shake=0; spawnTimer=0; visibleObstacles=[]; bossArena=null;
-  usedQuizIdx=new Set(); currentQuiz=null; quizCorrect=0; quizTotal=0; lastQuizWrong=false;
+  usedQuizIdx=new Set(); currentQuiz=null; quizCorrect=0; quizTotal=0; lastQuizWrong=false; pendingLevelUps=0;
   hud.bossbar.classList.add('hidden');
   renderSkillBar();
   showEraBanner(ERAS[0]);
@@ -1267,11 +1271,11 @@ function killBoss(){
 /* ============ LEVEL UP ============ */
 function grantXp(v){
   player.xp += v;
-  if(player.xp>=player.xpNeed){
+  while(player.xp>=player.xpNeed){
     player.xp -= player.xpNeed;
     player.level++;
     player.xpNeed = Math.floor(8 + player.level*4.5);
-    openQuiz();
+    pendingLevelUps++; // 실제 퀴즈 화면은 이번 프레임 처리가 끝난 뒤 한 번에 하나씩 연다
   }
 }
 
@@ -1400,6 +1404,12 @@ function openLevelUp(){
 }
 function closeLevelUp(){
   hud.levelup.classList.add('hidden');
+  // 한 번에 여러 레벨업이 쌓여 있었다면(광역 공격으로 여러 마리를 동시에 처치한 경우) 잃어버리지 않고 이어서 처리
+  if(pendingLevelUps>0){
+    pendingLevelUps--;
+    openQuiz();
+    return;
+  }
   state='playing';
   lastT = performance.now();
   requestAnimationFrame(loop);
@@ -1416,8 +1426,16 @@ function loop(now){
   if(state!=='playing') return;
   let dt = (now-lastT)/1000; lastT=now;
   dt = Math.min(dt, 0.05);
-  update(dt);
-  render();
+  try{
+    update(dt);
+    render();
+  }catch(e){
+    // 예기치 못한 오류로 게임이 "먹통"처럼 멈춰버리는 것을 막기 위한 안전장치.
+    // 화면이 멈춘 채 방치되지 않도록, 오류가 나면 콘솔에 기록하고 결과 화면으로 안전하게 종료한다.
+    console.error('게임 루프 오류:', e);
+    try{ endGame(false); }catch(e2){ /* 그래도 안 되면 더 이상 손쓸 수 없음 */ }
+    return;
+  }
   requestAnimationFrame(loop);
 }
 
@@ -1484,6 +1502,13 @@ function update(dt){
   hud.timerLbl.textContent = fmtTime(elapsed);
   hud.killLbl.textContent = '💀 '+killCount;
   if(bossActive) hud.bossFill.style.width = Math.max(0,bossActive.hp/bossActive.maxHp*100)+'%';
+
+  // 이번 프레임에 쌓인 레벨업이 있으면(폭탄 등으로 여러 마리를 한 번에 처치한 경우) 하나만 먼저 연다.
+  // 나머지는 이 퀴즈→레벨업 카드 선택이 끝난 뒤 closeLevelUp()에서 이어서 연다.
+  if(pendingLevelUps>0 && state==='playing'){
+    pendingLevelUps--;
+    openQuiz();
+  }
 }
 
 function updateEnemies(dt){
