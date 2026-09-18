@@ -362,8 +362,12 @@ const SKILL_DEFS = [
     descLv:lv=>'사거리·피해 증가 (Lv.'+lv+')'},
   {key:'rain', emo:'☄️', nm:'화살비', maxLv:6, descLocked:'적이 있는 곳을 예고한 뒤 화살비를 퍼붓는다',
     descLv:lv=>'범위·피해 증가 (Lv.'+lv+')'},
-  {key:'bomb', emo:'💣', nm:'폭탄 투척', maxLv:6, descLocked:'가장 가까운 적에게 폭탄을 던져 터뜨린다',
-    descLv:lv=>'폭발 범위·피해 증가 (Lv.'+lv+')'},
+  // 폭탄 투척: 원인 불명의 "게임오버/멈춤" 제보가 이 스킬 사용 이후에 반복되어 임시로 비활성화함.
+  // SKILL_DEFS에서만 빼서 레벨업 카드에 다시는 안 나오게 한 것뿐이고, throwBomb()/updateBombs() 등
+  // 실제 로직은 그대로 남아 있음 — player.skills.bomb이 0에서 절대 안 올라가므로(sk.bomb>0 가드)
+  // 모두 자동으로 동작을 멈춤. 원인을 찾으면 이 줄만 다시 살리면 됨.
+  // {key:'bomb', emo:'💣', nm:'폭탄 투척', maxLv:6, descLocked:'가장 가까운 적에게 폭탄을 던져 터뜨린다',
+  //   descLv:lv=>'폭발 범위·피해 증가 (Lv.'+lv+')'},
 ];
 
 // 투척 화살 스킬은 "시대"가 아니라 "스킬 레벨"에 따라 이름/모양이 바뀐다 (레벨업으로만 진화)
@@ -595,6 +599,9 @@ let currentQuiz = null, quizCorrect=0, quizTotal=0, lastQuizWrong=false;
 // 그때마다 즉시 openQuiz()를 부르면 퀴즈 화면이 서로 덮어써지며 상태가 꼬여 화면이 멈춘 것처럼 보인다.
 // 그래서 레벨업은 "쌓아두었다가(pendingLevelUps) 한 번에 하나씩" 순서대로 처리한다.
 let pendingLevelUps = 0;
+// 예기치 못한 오류로 게임이 종료된 경우, 결과 화면에 원인을 짧게 남겨서
+// 나중에 같은 문제가 또 생기면 개발자 도구 없이도 화면을 캡처해 바로 알려줄 수 있게 한다.
+let crashReason = null;
 
 function freshPlayer(){
   return {
@@ -797,7 +804,7 @@ function startGame(){
   lightningFx=[]; groundZones=[]; spiritShots=[]; spearFx=[]; rainZones=[]; bombs=[];
   elapsed=0; eraIdx=0; eraTimer=0; bossActive=null; bossSpawnedForEra=false;
   killCount=0; bossKillCount=0; shake=0; spawnTimer=0; visibleObstacles=[]; bossArena=null;
-  usedQuizIdx=new Set(); currentQuiz=null; quizCorrect=0; quizTotal=0; lastQuizWrong=false; pendingLevelUps=0;
+  usedQuizIdx=new Set(); currentQuiz=null; quizCorrect=0; quizTotal=0; lastQuizWrong=false; pendingLevelUps=0; crashReason=null;
   hud.bossbar.classList.add('hidden');
   renderSkillBar();
   showEraBanner(ERAS[0]);
@@ -823,7 +830,8 @@ function endGame(win){
     `📚 사회 퀴즈 정답: ${quizCorrect} / ${quizTotal}`+
     (win ? `<br>⚡ 속도 보너스: +${timeBonus}` : '')+
     `<br>🏆 점수: <b style="color:var(--ember-d)">${score}</b>`+
-    (score>best?'':`<br><span style="font-size:13px;color:var(--ink3)">최고 기록: ${best}점</span>`);
+    (score>best?'':`<br><span style="font-size:13px;color:var(--ink3)">최고 기록: ${best}점</span>`)+
+    (crashReason ? `<br><span style="font-size:11px;color:var(--ink3)">(개발자 참고용 오류: ${crashReason})</span>` : '');
 
   showScreen('end');
   $('endLbContent').innerHTML = '<div style="color:var(--ink3);font-size:13px;">불러오는 중...</div>';
@@ -1404,10 +1412,14 @@ function openLevelUp(){
 }
 function closeLevelUp(){
   hud.levelup.classList.add('hidden');
-  // 한 번에 여러 레벨업이 쌓여 있었다면(광역 공격으로 여러 마리를 동시에 처치한 경우) 잃어버리지 않고 이어서 처리
+  // 한 번에 여러 레벨업이 쌓여 있었다면(폭탄 등 광역 공격으로 여러 마리를 동시에 처치한 경우) 잃어버리지 않고 이어서 처리한다.
+  // 단, 이어지는 레벨업마다 매번 새 퀴즈를 또 띄우면 "한 번의 대박 처치"가 연속 퀴즈 오답 페널티로
+  // 순식간에 체력을 다 깎아버리는(=갑작스러운 게임오버) 부작용이 생긴다.
+  // 그래서 퀴즈는 이번 처치 묶음당 1번만 보고, 나머지 쌓인 레벨업은 퀴즈 없이 카드 선택만 바로 이어서 준다.
   if(pendingLevelUps>0){
     pendingLevelUps--;
-    openQuiz();
+    lastQuizWrong = false; // 추가 카드는 페널티 없이 항상 3장으로 제공
+    openLevelUp();
     return;
   }
   state='playing';
@@ -1433,6 +1445,7 @@ function loop(now){
     // 예기치 못한 오류로 게임이 "먹통"처럼 멈춰버리는 것을 막기 위한 안전장치.
     // 화면이 멈춘 채 방치되지 않도록, 오류가 나면 콘솔에 기록하고 결과 화면으로 안전하게 종료한다.
     console.error('게임 루프 오류:', e);
+    crashReason = (e && e.message) ? e.message : String(e);
     try{ endGame(false); }catch(e2){ /* 그래도 안 되면 더 이상 손쓸 수 없음 */ }
     return;
   }
