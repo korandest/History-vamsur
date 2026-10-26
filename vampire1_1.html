@@ -112,11 +112,24 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
 #bossbar .bar{height:20px;border:2px solid rgba(255,255,255,.5);}
 #bossbar .bar>i{background:linear-gradient(90deg,#e05a5a,#c22f2f);}
 
-#joylayer{position:absolute;inset:0;z-index:4;}
+#joylayer{position:absolute;inset:0;z-index:4;touch-action:none;}
 .joybase{position:absolute;width:110px;height:110px;border-radius:50%;background:rgba(74,52,35,.18);
   border:3px solid rgba(74,52,35,.35);transform:translate(-50%,-50%);display:none;}
 .joyknob{position:absolute;width:52px;height:52px;border-radius:50%;background:rgba(240,122,43,.75);
   border:3px solid rgba(208,95,22,.9);transform:translate(-50%,-50%);display:none;}
+
+/* ---- 가상 방향키패드 (태블릿 등에서 자유 조이스틱이 불안정할 때를 대비한 고정형 버튼) ---- */
+#dpad{position:absolute;left:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));
+  z-index:7;width:172px;height:172px;touch-action:none;}
+.dbtn{position:absolute;width:58px;height:58px;border-radius:16px;
+  background:rgba(61,42,26,.42);border:3px solid rgba(255,253,247,.55);
+  display:flex;align-items:center;justify-content:center;font-size:24px;line-height:1;color:#fff;
+  box-shadow:var(--sh); touch-action:none; transition:background .08s,border-color .08s;}
+.dbtn.pressed{background:rgba(240,122,43,.85); border-color:rgba(208,95,22,.95);}
+.dbtn.up{left:57px; top:0;}
+.dbtn.down{left:57px; top:114px;}
+.dbtn.left{left:0; top:57px;}
+.dbtn.right{left:114px; top:57px;}
 
 #erabanner{position:absolute;top:16%;left:0;right:0;text-align:center;pointer-events:none;z-index:8;
   opacity:0;transition:opacity .4s;}
@@ -220,6 +233,13 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
     <div id="joylayer"></div>
     <div class="joybase" id="joyBase"></div>
     <div class="joyknob" id="joyKnob"></div>
+
+    <div id="dpad">
+      <div class="dbtn up" id="dpadUp">▲</div>
+      <div class="dbtn down" id="dpadDown">▼</div>
+      <div class="dbtn left" id="dpadLeft">◀</div>
+      <div class="dbtn right" id="dpadRight">▶</div>
+    </div>
 
     <div id="hud">
       <div class="toprow">
@@ -712,14 +732,34 @@ function endJoy(e){
 joylayer.addEventListener('pointerup', endJoy);
 joylayer.addEventListener('pointercancel', endJoy);
 
+// ---- 가상 방향키패드 (고정 버튼형, 태블릿 등 자유 조이스틱이 불안정한 환경 대비) ----
+const dpad = {up:false, down:false, left:false, right:false};
+function wireDpadBtn(el, dir){
+  const press = e=>{
+    if(state!=='playing') return;
+    dpad[dir]=true; el.classList.add('pressed');
+    try{ el.setPointerCapture(e.pointerId); }catch(err){}
+    e.preventDefault();
+  };
+  const release = ()=>{ dpad[dir]=false; el.classList.remove('pressed'); };
+  el.addEventListener('pointerdown', press);
+  el.addEventListener('pointerup', release);
+  el.addEventListener('pointercancel', release);
+  el.addEventListener('pointerleave', release);
+}
+wireDpadBtn($('dpadUp'), 'up');
+wireDpadBtn($('dpadDown'), 'down');
+wireDpadBtn($('dpadLeft'), 'left');
+wireDpadBtn($('dpadRight'), 'right');
+
 function inputVector(){
   let nx=0, ny=0;
   if(joy.active){ nx = joy.dx/JOY_MAXR; ny = joy.dy/JOY_MAXR; }
   else{
-    if(keys['arrowleft']||keys['a']) nx-=1;
-    if(keys['arrowright']||keys['d']) nx+=1;
-    if(keys['arrowup']||keys['w']) ny-=1;
-    if(keys['arrowdown']||keys['s']) ny+=1;
+    if(keys['arrowleft']||keys['a']||dpad.left) nx-=1;
+    if(keys['arrowright']||keys['d']||dpad.right) nx+=1;
+    if(keys['arrowup']||keys['w']||dpad.up) ny-=1;
+    if(keys['arrowdown']||keys['s']||dpad.down) ny+=1;
     const len=Math.hypot(nx,ny); if(len>1){ nx/=len; ny/=len; }
   }
   return [nx,ny];
